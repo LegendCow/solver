@@ -1,0 +1,1291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Solution Parser</title>
+  <style>
+    body { font-family: sans-serif; margin: 6px; }
+    .layout { display: grid; grid-template-columns: max-content minmax(420px, 1fr); gap: 10px; align-items: start; }
+    .section { margin-bottom: 10px; }
+    .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 8px; }
+    .stack { display: grid; gap: 8px; }
+    .inline-input { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: end; }
+    .grid-wrap { position: relative; width: min(calc(100vh - 24px), 70vw); }
+    .hand-grid { display: grid; grid-template-columns: repeat(13, 1fr); gap: 0; width: 100%; align-self: start; }
+    .hand-cell, .combo-chip { position: relative; border: 1px solid #999; cursor: pointer; overflow: hidden; background: #000; }
+    .hand-cell { aspect-ratio: 1 / 1; min-height: 34px; }
+    .hand-cell.selected, .combo-chip.selected { outline: none; }
+    .bar { position: absolute; inset: 0; }
+    .label, .combo-content { position: relative; z-index: 1; color: #fff; text-shadow: 0 1px 2px #000; }
+    .label { font-size: 14px; font-weight: bold; padding: 1px 2px 0; }
+    .hand-cell.inactive { cursor: default; }
+    .combo-chip { min-height: 48px; }
+    .combo-content { padding: 4px 6px; font-size: 11px; }
+    .combo-title { display: flex; justify-content: space-between; gap: 8px; font-weight: bold; margin-bottom: 4px; }
+    .combo-line { display: flex; justify-content: space-between; gap: 8px; }
+    input, select, textarea, button { font: inherit; }
+    input, select, textarea { width: 100%; box-sizing: border-box; padding: 4px 6px; }
+    textarea { min-height: 72px; resize: vertical; font-family: monospace; font-size: 12px; }
+    button { padding: 4px 8px; }
+    .chips, .actions, .legend, .sizes { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { border: 1px solid #999; padding: 3px 6px; }
+    .legend button.selected { border: 2px solid #000; }
+    .panel { border: 1px solid #bbb; padding: 8px; }
+    .mono { font-family: monospace; white-space: pre-wrap; word-break: break-word; }
+    .check-inline {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      margin-top: 2px;
+    }
+    .check-inline input {
+      width: auto;
+      margin: 0;
+      flex: 0 0 auto;
+    }
+    .combo-overlay {
+      position: absolute;
+      left: 8px;
+      top: 8px;
+      width: min(360px, calc(100% - 16px));
+      max-height: calc(100% - 16px);
+      overflow: auto;
+      background: #fff;
+      border: 1px solid #888;
+      padding: 6px;
+      z-index: 3;
+    }
+    .overlay-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      align-items: center;
+    }
+    @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div>
+      <div class="section panel">
+        <div class="grid-wrap">
+          <div id="comboOverlay" class="combo-overlay" style="display:none;"></div>
+          <div id="handGrid" class="hand-grid"></div>
+        </div>
+        <div id="actionCounters" class="chips" style="margin: 6px 0 4px;"></div>
+        <div id="gridCounters" class="chips"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section panel">
+        <h2>Metadata</h2>
+        <div class="row">
+          <div>
+            <label for="nodeId">Node ID</label>
+            <input id="nodeId" type="number" min="0" value="101" />
+          </div>
+          <div>
+            <label for="sizeInput">Add Size (% pot)</label>
+            <div class="inline-input">
+              <input id="sizeInput" type="number" min="0" max="65535" step="1" value="" />
+              <button id="addSizeBtn" type="button">Add Size</button>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label for="maxReach">Max Reach</label>
+            <input id="maxReach" type="text" value="0" readonly />
+          </div>
+        </div>
+        <div class="actions">
+          <label class="check-inline" for="facingBet"><input id="facingBet" type="checkbox" /> <span>Facing Bet</span></label>
+        </div>
+        <div id="sizesList" class="sizes" style="margin-top: 6px;"></div>
+        <div id="actionSummary" class="chips" style="margin-top: 6px;"></div>
+      </div>
+
+      <div class="section panel">
+        <h2>Paint</h2>
+        <div class="row">
+          <div>
+            <label for="paintMode">Edit Mode</label>
+            <select id="paintMode">
+              <option value="weights">Weights</option>
+              <option value="strategy">Strategy</option>
+            </select>
+          </div>
+          <div>
+            <label for="brushPercent">Paint Value (%)</label>
+            <input id="brushPercent" type="number" min="0" max="100" step="1" value="100" />
+          </div>
+        </div>
+        <div class="legend" id="legendButtons"></div>
+        <div class="actions" id="paintActions" style="margin-top: 6px;"></div>
+      </div>
+
+      <div class="section panel">
+        <h2>Encode / Decode</h2>
+        <div class="section">
+          <label for="exportName">Export Name</label>
+          <input id="exportName" type="text" value="node-101" />
+        </div>
+        <div class="actions">
+          <button id="encodeBtn" type="button">Encode</button>
+          <button id="downloadBtn" type="button">Export .bin</button>
+          <button id="downloadZstdBtn" type="button">Export .bin.zst</button>
+        </div>
+        <div style="margin-top: 8px;">
+          <input id="fileInput" type="file" accept=".bin,.blob,.dat,.zst,.bin.zst,application/octet-stream" />
+        </div>
+        <h3>Hex Preview</h3>
+        <div id="hexOut" class="mono"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section panel">
+    <h2>Text Sync</h2>
+    <div class="actions" style="margin-bottom: 8px;">
+      <button id="applyTextBtn" type="button">Apply</button>
+    </div>
+    <div class="row">
+      <div>
+        <label for="compactToCanonical">Combo Mask</label>
+        <textarea id="compactToCanonical"></textarea>
+      </div>
+      <div>
+        <label for="weightsText">Weights</label>
+        <textarea id="weightsText"></textarea>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="strategyText">Strategy</label>
+        <textarea id="strategyText"></textarea>
+      </div>
+      <div>
+        <label for="actionEvText">Action EV</label>
+        <textarea id="actionEvText"></textarea>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="equityText">Equity</label>
+        <textarea id="equityText"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const MAGIC = 0x31534e5a;
+    const HEADER_SIZE = 48;
+    const TOTAL_COMBOS = 1326;
+    const COMBO_MASK_BYTES = Math.ceil(TOTAL_COMBOS / 8);
+    const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
+    const PROB_SCALE = 65535;
+    const EV_SCALE = 100;
+    const RANKS_ASC = "23456789TJQKA".split("");
+    const RANKS_DESC = "AKQJT98765432".split("");
+    const SUITS = "cdhs".split("");
+    const EPSILON = 1e-9;
+
+    const COLORS = {
+      jam: "#7a0000",
+      raise1: "#b30000",
+      raise2: "#c73737",
+      raise3: "#de6666",
+      raise4: "#ef9b9b",
+      passive: "#2d9f43",
+      fold: "#2b62c9",
+      empty: "#000000",
+    };
+
+    const app = {
+      catalog: null,
+      handClasses: null,
+      gridKeys: null,
+      state: null,
+      currentBuffer: null,
+      zstd: null,
+      zstdReady: null,
+      mouseDown: false,
+    };
+
+    function byId(id) {
+      return document.getElementById(id);
+    }
+
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function safeNumber(value, fallback) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function formatNumber(value, decimals) {
+      return Number(value).toFixed(decimals).replace(/\.?0+$/, "");
+    }
+
+    function parseNumberList(text) {
+      return String(text || "")
+        .split(/[\s,]+/)
+        .map((token) => token.trim())
+        .filter(Boolean)
+        .map(Number)
+        .filter((n) => !Number.isNaN(n));
+    }
+
+    function quantizeUint16(values, scale) {
+      const out = new Uint16Array(values.length);
+      for (let i = 0; i < values.length; i += 1) out[i] = Math.round(clamp(values[i], 0, 1) * scale);
+      return out;
+    }
+
+    function quantizeInt16(values, scale) {
+      const out = new Int16Array(values.length);
+      for (let i = 0; i < values.length; i += 1) out[i] = clamp(Math.round(values[i] * scale), -32768, 32767);
+      return out;
+    }
+
+    function buildComboMask(activeIds) {
+      const mask = new Uint8Array(COMBO_MASK_BYTES);
+      for (const comboId of activeIds) {
+        if (comboId < 0 || comboId >= TOTAL_COMBOS) continue;
+        mask[comboId >> 3] |= 1 << (comboId & 7);
+      }
+      return mask;
+    }
+
+    function unpackComboMask(maskBytes) {
+      const activeIds = [];
+      const bytes = maskBytes instanceof Uint8Array ? maskBytes : new Uint8Array(maskBytes);
+      for (let comboId = 0; comboId < TOTAL_COMBOS; comboId += 1) {
+        if ((bytes[comboId >> 3] & (1 << (comboId & 7))) !== 0) {
+          activeIds.push(comboId);
+        }
+      }
+      return activeIds;
+    }
+
+    function dequantizeUint16(arr, scale) {
+      return Array.from(arr, (value) => value / scale);
+    }
+
+    function dequantizeInt16(arr, scale) {
+      return Array.from(arr, (value) => value / scale);
+    }
+
+    function handClassKey(cardA, cardB) {
+      if (cardA.rank === cardB.rank) return cardA.rank + cardB.rank;
+      const aIndex = RANKS_ASC.indexOf(cardA.rank);
+      const bIndex = RANKS_ASC.indexOf(cardB.rank);
+      const high = aIndex > bIndex ? cardA.rank : cardB.rank;
+      const low = aIndex > bIndex ? cardB.rank : cardA.rank;
+      return high + low + (cardA.suit === cardB.suit ? "s" : "o");
+    }
+
+    function buildCatalog() {
+      const cards = [];
+      for (const rank of RANKS_ASC) {
+        for (const suit of SUITS) {
+          cards.push({ rank, suit, code: rank + suit });
+        }
+      }
+
+      const combos = [];
+      const handClasses = {};
+      for (let i = 0; i < cards.length; i += 1) {
+        for (let j = i + 1; j < cards.length; j += 1) {
+          const a = cards[i];
+          const b = cards[j];
+          const handKey = handClassKey(a, b);
+          const combo = { canonicalId: combos.length, combo: a.code + b.code, handKey };
+          combos.push(combo);
+          if (!handClasses[handKey]) handClasses[handKey] = { key: handKey, comboIds: [], maxCombos: 0 };
+          handClasses[handKey].comboIds.push(combo.canonicalId);
+        }
+      }
+
+      const gridKeys = [];
+      for (let row = 0; row < RANKS_DESC.length; row += 1) {
+        for (let col = 0; col < RANKS_DESC.length; col += 1) {
+          let key;
+          if (row === col) key = RANKS_DESC[row] + RANKS_DESC[col];
+          else if (row < col) key = RANKS_DESC[row] + RANKS_DESC[col] + "s";
+          else key = RANKS_DESC[col] + RANKS_DESC[row] + "o";
+          gridKeys.push(key);
+          handClasses[key].maxCombos = handClasses[key].comboIds.length;
+        }
+      }
+      return { combos, handClasses, gridKeys };
+    }
+
+    function deriveMeta(meta) {
+      const sizesAsc = Array.from(new Set((meta.actionSizes || [])
+        .map((value) => Math.round(safeNumber(value, 0)))
+        .filter((value) => value >= 0 && value <= 65535)))
+        .sort((a, b) => a - b);
+      const sizesDesc = [...sizesAsc].sort((a, b) => b - a);
+      const actionLabels = ["All-in"];
+      for (const size of sizesDesc) actionLabels.push((meta.facingBet ? "Raise " : "Bet ") + size + "%");
+      actionLabels.push(meta.facingBet ? "Call" : "Check");
+      if (meta.facingBet) actionLabels.push("Fold");
+      const actionCount = actionLabels.length;
+      return {
+        ...meta,
+        maxReach: clamp(safeNumber(meta.maxReach, 0), 0, 1),
+        actionSizes: sizesAsc,
+        actionLabels,
+        actionCount,
+        strategyStoredCount: actionCount - 1,
+        evStoredCount: meta.facingBet && meta.foldEvOmitted ? actionCount - 1 : actionCount,
+      };
+    }
+
+    function createDefaultRow(length) {
+      const row = new Array(length).fill(0);
+      row[length - 1] = 1;
+      return row;
+    }
+
+    function normalizeStrategy(row) {
+      const clamped = row.map((value) => clamp(value, 0, 1));
+      const sum = clamped.reduce((acc, value) => acc + value, 0);
+      if (sum <= EPSILON) return createDefaultRow(row.length);
+      return clamped.map((value) => value / sum);
+    }
+
+    function createState(meta) {
+      const derived = deriveMeta(meta);
+      return {
+        meta: derived,
+        weights: new Array(TOTAL_COMBOS).fill(0),
+        strategy: Array.from({ length: TOTAL_COMBOS }, () => createDefaultRow(derived.actionCount)),
+        actionEv: Array.from({ length: TOTAL_COMBOS }, () => new Array(derived.actionCount).fill(0)),
+        equity: new Array(TOTAL_COMBOS).fill(0),
+        nodeEv: new Array(TOTAL_COMBOS).fill(0),
+        editMode: "weights",
+        brushPercent: 100,
+        brushActionIndex: 0,
+        selectedCellKey: "AA",
+        selectedComboId: null,
+        overlayOpen: false,
+      };
+    }
+
+    function colorForAction(index) {
+      const lastIndex = app.state.meta.actionLabels.length - 1;
+      const foldIndex = app.state.meta.facingBet ? lastIndex : -1;
+      const passiveIndex = app.state.meta.facingBet ? lastIndex - 1 : lastIndex;
+      if (index === 0) return COLORS.jam;
+      if (index === foldIndex) return COLORS.fold;
+      if (index === passiveIndex) return COLORS.passive;
+      const reds = [COLORS.raise1, COLORS.raise2, COLORS.raise3, COLORS.raise4];
+      return reds[Math.min(index - 1, reds.length - 1)];
+    }
+
+    function getControlsMeta() {
+      return {
+        nodeId: Math.max(0, Math.round(safeNumber(byId("nodeId").value, 0))),
+        facingBet: byId("facingBet").checked,
+        maxReach: app.state.meta.maxReach,
+        hasEquity: app.state.meta.hasEquity,
+        hasNodeEv: app.state.meta.hasNodeEv,
+        foldEvOmitted: false,
+        actionSizes: app.state.meta.actionSizes.slice(),
+      };
+    }
+
+    function syncControlsFromState() {
+      const meta = app.state.meta;
+      byId("nodeId").value = meta.nodeId;
+      byId("maxReach").value = formatNumber(meta.maxReach || 0, 6);
+      byId("facingBet").checked = meta.facingBet;
+      byId("paintMode").value = app.state.editMode;
+      byId("brushPercent").value = app.state.brushPercent;
+    }
+
+    function computeMaxReach(weights) {
+      let maxValue = 0;
+      for (let i = 0; i < weights.length; i += 1) {
+        if (weights[i] > maxValue) maxValue = weights[i];
+      }
+      return maxValue;
+    }
+
+    function normalizedDisplayWeight(weight) {
+      const maxReach = app.state.meta.maxReach || 0;
+      if (maxReach <= EPSILON) return 0;
+      return clamp(weight / maxReach, 0, 1);
+    }
+
+    function syncExportName(force) {
+      const input = byId("exportName");
+      const defaultName = "node-" + app.state.meta.nodeId;
+      if (force || input.dataset.auto !== "0" || !input.value.trim()) {
+        input.value = defaultName;
+        input.dataset.auto = "1";
+      }
+    }
+
+    function remapStrategyRow(row, prevLabels, nextLabels) {
+      const oldMap = {};
+      for (let i = 0; i < prevLabels.length; i += 1) oldMap[prevLabels[i]] = row[i] || 0;
+      const next = new Array(nextLabels.length).fill(0);
+      let matched = 0;
+      for (let i = 0; i < nextLabels.length; i += 1) {
+        if (Object.prototype.hasOwnProperty.call(oldMap, nextLabels[i])) {
+          next[i] = oldMap[nextLabels[i]];
+          matched += next[i];
+        }
+      }
+      if (matched < 1 - EPSILON) next[next.length - 1] += 1 - matched;
+      return normalizeStrategy(next);
+    }
+
+    function remapEvRow(row, prevLabels, nextLabels) {
+      const oldMap = {};
+      for (let i = 0; i < prevLabels.length; i += 1) oldMap[prevLabels[i]] = row[i] || 0;
+      const next = new Array(nextLabels.length).fill(0);
+      for (let i = 0; i < nextLabels.length; i += 1) {
+        next[i] = Object.prototype.hasOwnProperty.call(oldMap, nextLabels[i]) ? oldMap[nextLabels[i]] : 0;
+      }
+      if (nextLabels[nextLabels.length - 1] === "Fold") next[next.length - 1] = 0;
+      return next;
+    }
+
+    function applyMetaTransition(nextMeta) {
+      const prevMeta = app.state.meta;
+      const prevLabels = prevMeta.actionLabels;
+      const nextLabels = nextMeta.actionLabels;
+      const newStrategy = new Array(TOTAL_COMBOS);
+      const newActionEv = new Array(TOTAL_COMBOS);
+      for (let comboId = 0; comboId < TOTAL_COMBOS; comboId += 1) {
+        newStrategy[comboId] = remapStrategyRow(app.state.strategy[comboId], prevLabels, nextLabels);
+        newActionEv[comboId] = remapEvRow(app.state.actionEv[comboId], prevLabels, nextLabels);
+      }
+      app.state.meta = nextMeta;
+      app.state.strategy = newStrategy;
+      app.state.actionEv = newActionEv;
+      app.state.brushActionIndex = clamp(app.state.brushActionIndex, 0, nextMeta.actionCount - 1);
+      if (!nextMeta.hasEquity) app.state.equity = new Array(TOTAL_COMBOS).fill(0);
+      if (!nextMeta.hasNodeEv) app.state.nodeEv = new Array(TOTAL_COMBOS).fill(0);
+      renderAll();
+    }
+
+    function applyMetaFromControls() {
+      const nextMeta = deriveMeta({
+        ...app.state.meta,
+        ...getControlsMeta(),
+        actionSizes: app.state.meta.actionSizes.slice(),
+      });
+      applyMetaTransition(nextMeta);
+    }
+
+    function addSize() {
+      const size = Math.round(safeNumber(byId("sizeInput").value, NaN));
+      if (!Number.isFinite(size) || size < 0 || size > 65535) return;
+      const nextMeta = deriveMeta({ ...app.state.meta, actionSizes: [...app.state.meta.actionSizes, size] });
+      applyMetaTransition(nextMeta);
+    }
+
+    function removeSize(size) {
+      const nextMeta = deriveMeta({
+        ...app.state.meta,
+        actionSizes: app.state.meta.actionSizes.filter((value) => value !== size),
+      });
+      applyMetaTransition(nextMeta);
+    }
+
+    function makeBarSegments(actionTotals, totalSlots) {
+      const segments = [];
+      let left = 0;
+      for (let i = 0; i < actionTotals.length; i += 1) {
+        const width = totalSlots > 0 ? (actionTotals[i] / totalSlots) * 100 : 0;
+        if (width <= 0.001) continue;
+        segments.push({ left, width, color: colorForAction(i) });
+        left += width;
+      }
+      if (left < 100) segments.push({ left, width: 100 - left, color: COLORS.empty });
+      return segments;
+    }
+
+    function renderSegmentsHtml(segments) {
+      return segments.map((segment) => `<span style="position:absolute;top:0;bottom:0;left:${segment.left}%;width:${segment.width}%;background:${segment.color};"></span>`).join("");
+    }
+
+    function cellStats(comboIds) {
+      const actionTotals = new Array(app.state.meta.actionCount).fill(0);
+      const displayActionTotals = new Array(app.state.meta.actionCount).fill(0);
+      let weightedCombos = 0;
+      let activeCombos = 0;
+      for (const comboId of comboIds) {
+        const weight = app.state.weights[comboId];
+        const displayWeight = normalizedDisplayWeight(weight);
+        if (weight > EPSILON) activeCombos += 1;
+        weightedCombos += weight;
+        for (let i = 0; i < actionTotals.length; i += 1) {
+          actionTotals[i] += weight * app.state.strategy[comboId][i];
+          displayActionTotals[i] += displayWeight * app.state.strategy[comboId][i];
+        }
+      }
+      return { weightedCombos, activeCombos, actionTotals, displayActionTotals };
+    }
+
+    function renderGrid() {
+      byId("handGrid").innerHTML = app.gridKeys.map((key) => {
+        const hand = app.handClasses[key];
+        const stats = cellStats(hand.comboIds);
+        const inactive = stats.activeCombos === 0;
+        const selected = app.state.selectedCellKey === key && app.state.selectedComboId == null;
+        return `
+          <div class="hand-cell${selected ? " selected" : ""}${inactive ? " inactive" : ""}" data-hand-key="${key}" data-active="${inactive ? "0" : "1"}">
+            <div class="bar">${renderSegmentsHtml(makeBarSegments(stats.displayActionTotals, hand.maxCombos))}</div>
+            <div class="label">${key}</div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function getSelectedComboIds() {
+      if (app.state.selectedCellKey) return app.handClasses[app.state.selectedCellKey].comboIds;
+      return [];
+    }
+
+    function renderSelection() {
+      const overlay = byId("comboOverlay");
+      const comboIds = getSelectedComboIds();
+      if (!comboIds.length || !app.state.overlayOpen || !app.state.selectedCellKey) {
+        overlay.style.display = "none";
+        overlay.innerHTML = "";
+        return;
+      }
+      overlay.style.display = "block";
+      overlay.innerHTML = `
+        <div class="overlay-head">
+          <strong>${app.state.selectedCellKey}</strong>
+          <button type="button" id="closeOverlayBtn">x</button>
+        </div>
+        <div class="stack">
+        ${comboIds.map((comboId) => {
+        const combo = app.catalog.combos[comboId];
+        const selected = app.state.selectedComboId === comboId;
+        const displayWeight = normalizedDisplayWeight(app.state.weights[comboId]);
+        const weighted = app.state.strategy[comboId].map((value) => value * displayWeight);
+        return `
+          <div class="combo-chip${selected ? " selected" : ""}" data-combo-id="${comboId}">
+            <div class="bar">${renderSegmentsHtml(makeBarSegments(weighted, 1))}</div>
+            <div class="combo-content">
+              <div class="combo-title"><span>${combo.combo}</span></div>
+              ${app.state.meta.actionLabels.map((label, index) => `<div class="combo-line"><span>${label} ${formatNumber(app.state.strategy[comboId][index] * 100, 1)}%</span><span>${formatNumber(app.state.actionEv[comboId][index] || 0, 2)}</span></div>`).join("")}
+            </div>
+          </div>
+        `;
+      }).join("")}
+        </div>
+      `;
+    }
+
+    function renderMeta() {
+      byId("sizesList").innerHTML = app.state.meta.actionSizes.length
+        ? app.state.meta.actionSizes.map((size) => `<span class="chip">${size}% <button type="button" data-remove-size="${size}">x</button></span>`).join("")
+        : "";
+      byId("actionSummary").innerHTML = [
+        `<span class="chip">actions ${app.state.meta.actionCount}</span>`,
+        ...app.state.meta.actionLabels.map((label, index) => `<span class="chip" style="background:${colorForAction(index)};color:white;">${label}</span>`),
+      ].join("");
+    }
+
+    function renderLegend() {
+      byId("legendButtons").innerHTML = app.state.editMode === "strategy"
+        ? app.state.meta.actionLabels.map((label, index) => `
+        <button type="button" data-action-index="${index}" class="${app.state.editMode === "strategy" && app.state.brushActionIndex === index ? "selected" : ""}" style="background:${colorForAction(index)};color:white;">${label}</button>
+      `).join("")
+        : "";
+      byId("paintActions").innerHTML = app.state.editMode === "weights"
+        ? '<button id="setWeightsZeroBtn" type="button">All Weights 0</button><button id="setWeightsFullBtn" type="button">All Weights 100</button>'
+        : '';
+    }
+
+    function renderCounters() {
+      const actionTotals = new Array(app.state.meta.actionCount).fill(0);
+      let activeCombos = 0;
+      let weightedCombos = 0;
+      for (let comboId = 0; comboId < TOTAL_COMBOS; comboId += 1) {
+        const weight = app.state.weights[comboId];
+        if (weight > EPSILON) activeCombos += 1;
+        weightedCombos += weight;
+        for (let i = 0; i < actionTotals.length; i += 1) actionTotals[i] += weight * app.state.strategy[comboId][i];
+      }
+      byId("gridCounters").innerHTML = `<span class="chip">active combos ${activeCombos}</span><span class="chip">weighted combos ${formatNumber(weightedCombos, 2)}</span>`;
+      byId("actionCounters").innerHTML = actionTotals.map((value, index) => `<span class="chip" style="background:${colorForAction(index)};color:white;">${app.state.meta.actionLabels[index]} ${formatNumber(value, 2)}</span>`).join("");
+    }
+
+    function getCompactArrays() {
+      const activeIds = [];
+      const weights = [];
+      const strategy = [];
+      const equity = [];
+      const nodeEv = [];
+      const actionEv = [];
+      for (let comboId = 0; comboId < TOTAL_COMBOS; comboId += 1) {
+        if (app.state.weights[comboId] <= EPSILON) continue;
+        activeIds.push(comboId);
+        weights.push(app.state.weights[comboId]);
+        for (let i = 0; i < app.state.meta.strategyStoredCount; i += 1) strategy.push(app.state.strategy[comboId][i]);
+        if (app.state.meta.hasEquity) equity.push(app.state.equity[comboId] || 0);
+        if (app.state.meta.hasNodeEv) nodeEv.push(app.state.nodeEv[comboId] || 0);
+        for (let i = 0; i < app.state.meta.evStoredCount; i += 1) actionEv.push(app.state.actionEv[comboId][i] || 0);
+      }
+      return { activeIds, weights, strategy, equity, nodeEv, actionEv };
+    }
+
+    function parseCompactIdsText() {
+      return Array.from(new Set(
+        parseNumberList(byId("compactToCanonical").value)
+          .map((value) => Math.round(value))
+          .filter((value) => Number.isInteger(value))
+      ));
+    }
+
+    function clipDependentTextFieldsToMask() {
+      const compactIds = parseCompactIdsText().filter((id) => id >= 0 && id < TOTAL_COMBOS);
+      const comboCount = compactIds.length;
+      const weights = parseNumberList(byId("weightsText").value).slice(0, comboCount);
+      const strategy = parseNumberList(byId("strategyText").value).slice(0, comboCount * app.state.meta.strategyStoredCount);
+      const actionEv = parseNumberList(byId("actionEvText").value).slice(0, comboCount * app.state.meta.evStoredCount);
+      const equity = parseNumberList(byId("equityText").value).slice(0, comboCount);
+      byId("compactToCanonical").value = compactIds.join(", ");
+      byId("weightsText").value = weights.join(", ");
+      byId("strategyText").value = strategy.join(", ");
+      byId("actionEvText").value = actionEv.join(", ");
+      byId("equityText").value = equity.join(", ");
+    }
+
+    function updateTextAreasFromState() {
+      const compact = getCompactArrays();
+      byId("compactToCanonical").value = compact.activeIds.join(", ");
+      byId("weightsText").value = compact.weights.map((value) => formatNumber(value, 4)).join(", ");
+      byId("strategyText").value = compact.strategy.map((value) => formatNumber(value, 4)).join(", ");
+      byId("equityText").value = compact.equity.map((value) => formatNumber(value, 4)).join(", ");
+      byId("actionEvText").value = compact.actionEv.map((value) => formatNumber(value, 4)).join(", ");
+    }
+
+    function applyTextAreasToState() {
+      try {
+        const compactIds = parseCompactIdsText();
+        const weights = parseNumberList(byId("weightsText").value);
+        const strategy = parseNumberList(byId("strategyText").value);
+        const equity = parseNumberList(byId("equityText").value);
+        const actionEv = parseNumberList(byId("actionEvText").value);
+        if (compactIds.some((id) => id < 0 || id >= TOTAL_COMBOS)) throw new Error("Canonical IDs must be 0..1325.");
+        clipDependentTextFieldsToMask();
+
+        app.state.weights = new Array(TOTAL_COMBOS).fill(0);
+        app.state.strategy = Array.from({ length: TOTAL_COMBOS }, () => createDefaultRow(app.state.meta.actionCount));
+        app.state.actionEv = Array.from({ length: TOTAL_COMBOS }, () => new Array(app.state.meta.actionCount).fill(0));
+        app.state.equity = new Array(TOTAL_COMBOS).fill(0);
+        app.state.nodeEv = new Array(TOTAL_COMBOS).fill(0);
+
+        for (let i = 0; i < compactIds.length; i += 1) {
+          const comboId = compactIds[i];
+          app.state.weights[comboId] = clamp(weights[i] || 0, 0, 1);
+          const row = new Array(app.state.meta.actionCount).fill(0);
+          let sum = 0;
+          for (let j = 0; j < app.state.meta.strategyStoredCount; j += 1) {
+            row[j] = clamp(strategy[(i * app.state.meta.strategyStoredCount) + j] || 0, 0, 1);
+            sum += row[j];
+          }
+          row[row.length - 1] = Math.max(0, 1 - sum);
+          app.state.strategy[comboId] = normalizeStrategy(row);
+          if (app.state.meta.hasEquity) app.state.equity[comboId] = clamp(equity[i] || 0, 0, 1);
+          const evRow = new Array(app.state.meta.actionCount).fill(0);
+          for (let j = 0; j < app.state.meta.evStoredCount; j += 1) evRow[j] = actionEv[(i * app.state.meta.evStoredCount) + j] || 0;
+          if (app.state.meta.foldEvOmitted && app.state.meta.facingBet) evRow[evRow.length - 1] = 0;
+          app.state.actionEv[comboId] = evRow;
+        }
+        renderAll();
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    function paintStrategyRow(row, actionIndex, targetValue) {
+      const next = row.slice();
+      const lastIndex = next.length - 1;
+      if (actionIndex === lastIndex) {
+        let otherSum = 0;
+        for (let i = 0; i < lastIndex; i += 1) otherSum += next[i];
+        const remaining = 1 - targetValue;
+        if (otherSum > EPSILON) {
+          const scale = remaining / otherSum;
+          for (let i = 0; i < lastIndex; i += 1) next[i] *= scale;
+        } else {
+          for (let i = 0; i < lastIndex; i += 1) next[i] = remaining / lastIndex;
+        }
+        next[lastIndex] = targetValue;
+        return normalizeStrategy(next);
+      }
+
+      const currentValue = next[actionIndex];
+      const delta = targetValue - currentValue;
+      if (delta > 0) {
+        const fromDefault = Math.min(next[lastIndex], delta);
+        next[lastIndex] -= fromDefault;
+        let remainingDelta = delta - fromDefault;
+
+        if (remainingDelta > EPSILON) {
+          let explicitOtherSum = 0;
+          for (let i = 0; i < lastIndex; i += 1) {
+            if (i !== actionIndex) explicitOtherSum += next[i];
+          }
+          if (explicitOtherSum > EPSILON) {
+            const scale = Math.max(0, (explicitOtherSum - remainingDelta) / explicitOtherSum);
+            for (let i = 0; i < lastIndex; i += 1) {
+              if (i !== actionIndex) next[i] *= scale;
+            }
+          } else {
+            for (let i = 0; i < lastIndex; i += 1) {
+              if (i !== actionIndex) next[i] = 0;
+            }
+          }
+        }
+      } else if (delta < 0) {
+        next[lastIndex] += -delta;
+      }
+
+      next[actionIndex] = targetValue;
+      return normalizeStrategy(next);
+    }
+
+    function paintSelection(comboIds) {
+      const value = clamp(safeNumber(byId("brushPercent").value, 100), 0, 100) / 100;
+      app.state.brushPercent = value * 100;
+      if (app.state.editMode === "weights") {
+        for (const comboId of comboIds) app.state.weights[comboId] = value;
+      } else {
+        for (const comboId of comboIds) app.state.strategy[comboId] = paintStrategyRow(app.state.strategy[comboId], app.state.brushActionIndex, value);
+      }
+      renderAll();
+    }
+
+    function encodeNodeBlob(input) {
+      const weightsBytes = input.weights.byteLength;
+      const strategyBytes = input.strategy.byteLength;
+      const actionSizesBytes = input.actionSizes.byteLength;
+      const comboMaskBytes = input.comboMask.byteLength;
+      const equityBytes = input.hasEquity && input.equity ? input.equity.byteLength : 0;
+      const nodeEvBytes = input.hasNodeEv && input.nodeEv ? input.nodeEv.byteLength : 0;
+      const actionEvBytes = input.actionEv.byteLength;
+      const offsetWeights = HEADER_SIZE;
+      const offsetStrategy = offsetWeights + weightsBytes;
+      const offsetActionSizes = offsetStrategy + strategyBytes;
+      const offsetComboMask = offsetActionSizes + actionSizesBytes;
+      const offsetEquity = offsetComboMask + comboMaskBytes;
+      const offsetNodeEv = offsetEquity + equityBytes;
+      const offsetActionEv = offsetNodeEv + nodeEvBytes;
+      const totalSize = offsetActionEv + actionEvBytes;
+      const buffer = new ArrayBuffer(totalSize);
+      const view = new DataView(buffer);
+      let flags = 0;
+      if (input.hasEquity) flags |= 1 << 0;
+      if (input.hasNodeEv) flags |= 1 << 1;
+      if (input.foldEvOmitted) flags |= 1 << 2;
+      if (input.facingBet) flags |= 1 << 3;
+      if (input.hasMaxReachScaling) flags |= 1 << 4;
+      view.setUint32(0, MAGIC, true);
+      view.setUint16(4, 1, true);
+      view.setUint16(6, flags, true);
+      view.setUint32(8, input.nodeId, true);
+      view.setUint32(12, offsetActionSizes, true);
+      view.setUint16(16, input.comboCount, true);
+      view.setUint8(18, input.actionCount);
+      view.setUint8(19, input.strategyStoredCount);
+      view.setUint8(20, input.evStoredCount);
+      view.setUint8(21, 0);
+      view.setUint16(22, Math.round(clamp(input.maxReach || 0, 0, 1) * PROB_SCALE), true);
+      view.setUint32(24, offsetWeights, true);
+      view.setUint32(28, offsetStrategy, true);
+      view.setUint32(32, offsetEquity, true);
+      view.setUint32(36, offsetNodeEv, true);
+      view.setUint32(40, offsetActionEv, true);
+      view.setUint32(44, totalSize, true);
+      new Uint8Array(buffer, offsetWeights, weightsBytes).set(new Uint8Array(input.weights.buffer));
+      new Uint8Array(buffer, offsetStrategy, strategyBytes).set(new Uint8Array(input.strategy.buffer));
+      new Uint8Array(buffer, offsetActionSizes, actionSizesBytes).set(new Uint8Array(input.actionSizes.buffer));
+      new Uint8Array(buffer, offsetComboMask, comboMaskBytes).set(new Uint8Array(input.comboMask.buffer, input.comboMask.byteOffset, input.comboMask.byteLength));
+      if (input.hasEquity && input.equity) new Uint8Array(buffer, offsetEquity, equityBytes).set(new Uint8Array(input.equity.buffer));
+      if (input.hasNodeEv && input.nodeEv) new Uint8Array(buffer, offsetNodeEv, nodeEvBytes).set(new Uint8Array(input.nodeEv.buffer));
+      new Uint8Array(buffer, offsetActionEv, actionEvBytes).set(new Uint8Array(input.actionEv.buffer));
+      return buffer;
+    }
+
+    function decodeNodeBlob(buffer) {
+      const view = new DataView(buffer);
+      if (view.getUint32(0, true) !== MAGIC) throw new Error("Invalid blob magic.");
+      const schemaVersion = view.getUint16(4, true);
+      if (schemaVersion !== 1) throw new Error("Unsupported schema version " + schemaVersion + ".");
+      const flags = view.getUint16(6, true);
+      const nodeId = view.getUint32(8, true);
+      const offsetActionSizes = view.getUint32(12, true);
+      const comboCount = view.getUint16(16, true);
+      const actionCount = view.getUint8(18);
+      const strategyStoredCount = view.getUint8(19);
+      const evStoredCount = view.getUint8(20);
+      const encodedMaxReach = view.getUint16(22, true);
+      const offsetWeights = view.getUint32(24, true);
+      const offsetStrategy = view.getUint32(28, true);
+      const storedOffsetEquity = view.getUint32(32, true);
+      const offsetNodeEv = view.getUint32(36, true);
+      const offsetActionEv = view.getUint32(40, true);
+      const totalSize = view.getUint32(44, true);
+      if (buffer.byteLength !== totalSize) throw new Error("Blob size mismatch.");
+
+      const hasEquity = (flags & (1 << 0)) !== 0;
+      const hasNodeEv = (flags & (1 << 1)) !== 0;
+      const foldEvOmitted = (flags & (1 << 2)) !== 0;
+      const facingBet = (flags & (1 << 3)) !== 0;
+      const hasMaxReachScaling = (flags & (1 << 4)) !== 0;
+      const maxReach = hasMaxReachScaling ? (encodedMaxReach / PROB_SCALE) : 1;
+      const sizeCount = Math.max(0, actionCount - (facingBet ? 3 : 2));
+      const weights = new Uint16Array(buffer, offsetWeights, comboCount);
+      const strategy = new Uint16Array(buffer, offsetStrategy, comboCount * strategyStoredCount);
+      const actionSizes = new Uint16Array(buffer, offsetActionSizes, sizeCount);
+      const offsetComboMask = offsetActionSizes + actionSizes.byteLength;
+      const comboMask = new Uint8Array(buffer, offsetComboMask, COMBO_MASK_BYTES);
+      const activeIds = unpackComboMask(comboMask);
+      if (activeIds.length !== comboCount) {
+        throw new Error("Combo mask population does not match comboCount.");
+      }
+      const derivedOffsetEquity = offsetComboMask + COMBO_MASK_BYTES;
+      const equity = hasEquity ? new Uint16Array(buffer, derivedOffsetEquity, comboCount) : null;
+      const nodeEv = hasNodeEv ? new Int16Array(buffer, offsetNodeEv, comboCount) : null;
+      const actionEv = new Int16Array(buffer, offsetActionEv, comboCount * evStoredCount);
+      return {
+        schemaVersion,
+        nodeId,
+        comboCount,
+        actionCount,
+        strategyStoredCount,
+        evStoredCount,
+        maxReach,
+        hasMaxReachScaling,
+        offsetActionSizes,
+        offsetComboMask,
+        offsetWeights,
+        offsetStrategy,
+        offsetEquity: storedOffsetEquity,
+        offsetNodeEv,
+        offsetActionEv,
+        totalSize,
+        hasEquity,
+        hasNodeEv,
+        foldEvOmitted,
+        facingBet,
+        actionSizes,
+        comboMask,
+        activeIds,
+        weights,
+        strategy,
+        equity,
+        nodeEv,
+        actionEv,
+      };
+    }
+
+    function hydrateStateFromDecoded(decoded) {
+      const meta = deriveMeta({
+        nodeId: decoded.nodeId,
+        facingBet: decoded.facingBet,
+        maxReach: decoded.maxReach,
+        hasEquity: decoded.hasEquity,
+        hasNodeEv: decoded.hasNodeEv,
+        foldEvOmitted: decoded.foldEvOmitted,
+        actionSizes: Array.from(decoded.actionSizes),
+      });
+      const state = createState(meta);
+      state.weights = new Array(TOTAL_COMBOS).fill(0);
+      state.strategy = Array.from({ length: TOTAL_COMBOS }, () => createDefaultRow(meta.actionCount));
+      state.actionEv = Array.from({ length: TOTAL_COMBOS }, () => new Array(meta.actionCount).fill(0));
+      state.equity = new Array(TOTAL_COMBOS).fill(0);
+      state.nodeEv = new Array(TOTAL_COMBOS).fill(0);
+      const weightsFloat = dequantizeUint16(decoded.weights, PROB_SCALE);
+      const strategyFloat = dequantizeUint16(decoded.strategy, PROB_SCALE);
+      const equityFloat = decoded.equity ? dequantizeUint16(decoded.equity, PROB_SCALE) : [];
+      const nodeEvFloat = decoded.nodeEv ? dequantizeInt16(decoded.nodeEv, EV_SCALE) : [];
+      const actionEvFloat = dequantizeInt16(decoded.actionEv, EV_SCALE);
+      for (let i = 0; i < decoded.comboCount; i += 1) {
+        const comboId = decoded.activeIds[i];
+        if (comboId < 0 || comboId >= TOTAL_COMBOS) continue;
+        state.weights[comboId] = (weightsFloat[i] || 0) * meta.maxReach;
+        const row = new Array(meta.actionCount).fill(0);
+        let sum = 0;
+        for (let j = 0; j < meta.strategyStoredCount; j += 1) {
+          row[j] = strategyFloat[(i * meta.strategyStoredCount) + j];
+          sum += row[j];
+        }
+        row[row.length - 1] = Math.max(0, 1 - sum);
+        state.strategy[comboId] = normalizeStrategy(row);
+        if (meta.hasEquity) state.equity[comboId] = equityFloat[i] || 0;
+        if (meta.hasNodeEv) state.nodeEv[comboId] = nodeEvFloat[i] || 0;
+        const evRow = new Array(meta.actionCount).fill(0);
+        for (let j = 0; j < meta.evStoredCount; j += 1) evRow[j] = actionEvFloat[(i * meta.evStoredCount) + j] || 0;
+        if (meta.foldEvOmitted && meta.facingBet) evRow[evRow.length - 1] = 0;
+        state.actionEv[comboId] = evRow;
+      }
+      state.editMode = app.state ? app.state.editMode : "weights";
+      state.brushPercent = app.state ? app.state.brushPercent : 100;
+      return state;
+    }
+
+    function renderHex(buffer, maxBytes) {
+      const bytes = new Uint8Array(buffer);
+      const slice = bytes.slice(0, maxBytes);
+      const rows = [];
+      for (let i = 0; i < slice.length; i += 16) {
+        rows.push(i.toString(16).padStart(4, "0") + ": " + Array.from(slice.slice(i, i + 16)).map((value) => value.toString(16).padStart(2, "0")).join(" "));
+      }
+      if (bytes.length > maxBytes) rows.push("... (" + (bytes.length - maxBytes) + " more bytes)");
+      byId("hexOut").textContent = rows.join("\n");
+    }
+
+    function triggerDownload(buffer, filename, mimeType) {
+      const blob = new Blob([buffer], { type: mimeType || "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function isZstdBuffer(buffer) {
+      if (!buffer || buffer.byteLength < ZSTD_MAGIC.length) return false;
+      const bytes = new Uint8Array(buffer, 0, ZSTD_MAGIC.length);
+      for (let i = 0; i < ZSTD_MAGIC.length; i += 1) {
+        if (bytes[i] !== ZSTD_MAGIC[i]) return false;
+      }
+      return true;
+    }
+
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-src="' + src + '"]');
+        if (existing) {
+          existing.addEventListener("load", resolve, { once: true });
+          existing.addEventListener("error", reject, { once: true });
+          if (existing.dataset.loaded === "1") resolve();
+          return;
+        }
+        const script = document.createElement("script");
+        script.src = src;
+        script.async = true;
+        script.dataset.src = src;
+        script.addEventListener("load", () => {
+          script.dataset.loaded = "1";
+          resolve();
+        }, { once: true });
+        script.addEventListener("error", () => reject(new Error("Failed to load " + src + ".")), { once: true });
+        document.head.appendChild(script);
+      });
+    }
+
+    async function ensureZstd() {
+      if (app.zstd) return app.zstd;
+      if (!app.zstdReady) {
+        app.zstdReady = (async () => {
+          try {
+            const mod = await import("https://esm.sh/@oneidentity/zstd-js@1.0.3");
+            if (mod && typeof mod.ZstdInit === "function") {
+              const codec = await mod.ZstdInit();
+              if (codec && codec.ZstdSimple && typeof codec.ZstdSimple.compress === "function" && typeof codec.ZstdSimple.decompress === "function") {
+                app.zstd = {
+                  compress(input, level) {
+                    return codec.ZstdSimple.compress(input, level);
+                  },
+                  decompress(input) {
+                    return codec.ZstdSimple.decompress(input);
+                  },
+                };
+                return app.zstd;
+              }
+            }
+          } catch (error) {
+            console.warn("Primary Zstd loader failed, trying fallback loader.", error);
+          }
+
+          await loadScript("https://cdn.jsdelivr.net/npm/zstd-codec@0.1.5/lib/zstd-codec.js");
+          await loadScript("https://cdn.jsdelivr.net/npm/zstd-codec@0.1.5/lib/zstd-codec-binding-wasm.js");
+          const fallbackApi = await new Promise((resolve, reject) => {
+            if (!window.ZstdCodec || typeof window.ZstdCodec.run !== "function") {
+              reject(new Error("Zstd codec did not initialize in either primary or fallback loader."));
+              return;
+            }
+            window.ZstdCodec.run((zstd) => {
+              try {
+                const simple = new zstd.Simple();
+                resolve({
+                  compress(input, level) {
+                    return simple.compress(input, level);
+                  },
+                  decompress(input) {
+                    return simple.decompress(input);
+                  },
+                });
+              } catch (error) {
+                reject(error);
+              }
+            });
+          });
+          app.zstd = fallbackApi;
+          return fallbackApi;
+        })().catch((error) => {
+          app.zstdReady = null;
+          throw error;
+        });
+      }
+      return app.zstdReady;
+    }
+
+    async function compressZstd(buffer) {
+      const zstd = await ensureZstd();
+      const compressed = zstd.compress(new Uint8Array(buffer));
+      return compressed.buffer.slice(compressed.byteOffset, compressed.byteOffset + compressed.byteLength);
+    }
+
+    async function decompressZstd(buffer) {
+      const zstd = await ensureZstd();
+      const decompressed = zstd.decompress(new Uint8Array(buffer));
+      return decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength);
+    }
+
+    function encodeFromState() {
+      try {
+        const compact = getCompactArrays();
+        const meta = app.state.meta;
+        const maxReach = computeMaxReach(compact.weights);
+        const normalizedWeights = compact.weights.map((value) => (maxReach > EPSILON ? clamp(value / maxReach, 0, 1) : 0));
+        const buffer = encodeNodeBlob({
+          nodeId: meta.nodeId,
+          comboCount: compact.activeIds.length,
+          actionCount: meta.actionCount,
+          strategyStoredCount: meta.strategyStoredCount,
+          evStoredCount: meta.evStoredCount,
+          maxReach,
+          hasMaxReachScaling: true,
+          hasEquity: meta.hasEquity,
+          hasNodeEv: meta.hasNodeEv,
+          foldEvOmitted: meta.foldEvOmitted,
+          facingBet: meta.facingBet,
+          weights: quantizeUint16(normalizedWeights, PROB_SCALE),
+          strategy: quantizeUint16(compact.strategy, PROB_SCALE),
+          actionSizes: new Uint16Array(meta.actionSizes),
+          comboMask: buildComboMask(compact.activeIds),
+          equity: meta.hasEquity ? quantizeUint16(compact.equity, PROB_SCALE) : null,
+          nodeEv: meta.hasNodeEv ? quantizeInt16(compact.nodeEv, EV_SCALE) : null,
+          actionEv: quantizeInt16(compact.actionEv, EV_SCALE),
+        });
+        app.currentBuffer = buffer;
+        renderHex(buffer, 256);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    function downloadCurrentBuffer() {
+      const exportBase = byId("exportName").value.trim() || ("node-" + app.state.meta.nodeId);
+      const filename = exportBase.toLowerCase().endsWith(".bin") ? exportBase : exportBase + ".bin";
+      triggerDownload(app.currentBuffer, filename, "application/octet-stream");
+    }
+
+    async function downloadCurrentBufferZstd() {
+      try {
+        const compressedBuffer = await compressZstd(app.currentBuffer);
+        const exportBase = byId("exportName").value.trim() || ("node-" + app.state.meta.nodeId);
+        const normalizedBase = exportBase.replace(/\.bin(\.zst)?$/i, "").replace(/\.zst$/i, "");
+        triggerDownload(compressedBuffer, normalizedBase + ".bin.zst", "application/zstd");
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    async function parseUploadedFile(file) {
+      try {
+        const rawBuffer = await file.arrayBuffer();
+        const buffer = isZstdBuffer(rawBuffer) || /\.zst$/i.test(file.name) ? await decompressZstd(rawBuffer) : rawBuffer;
+        const decoded = decodeNodeBlob(buffer);
+        app.currentBuffer = buffer;
+        app.state = hydrateStateFromDecoded(decoded);
+        renderAll();
+        syncExportName(true);
+        renderHex(buffer, 256);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    function renderAll() {
+      app.state.meta.maxReach = computeMaxReach(app.state.weights);
+      syncControlsFromState();
+      syncExportName(false);
+      renderMeta();
+      renderLegend();
+      renderCounters();
+      renderGrid();
+      renderSelection();
+      updateTextAreasFromState();
+      bindDynamicEvents();
+    }
+
+    function bindDynamicEvents() {
+      byId("handGrid").querySelectorAll(".hand-cell").forEach((cell) => {
+        const key = cell.getAttribute("data-hand-key");
+        const isActive = cell.getAttribute("data-active") === "1";
+        cell.addEventListener("mousedown", (event) => {
+          if (event.button !== 0) return;
+          if (!isActive && app.state.editMode !== "weights") return;
+          app.mouseDown = true;
+          app.state.selectedCellKey = key;
+          app.state.selectedComboId = null;
+          app.state.overlayOpen = false;
+          paintSelection(app.handClasses[key].comboIds);
+        });
+        cell.addEventListener("contextmenu", (event) => {
+          if (!isActive) return;
+          event.preventDefault();
+          app.state.selectedCellKey = key;
+          app.state.selectedComboId = null;
+          app.state.overlayOpen = true;
+          renderAll();
+        });
+        cell.addEventListener("mouseenter", () => {
+          if (app.mouseDown) {
+            if (!isActive && app.state.editMode !== "weights") return;
+            app.state.selectedCellKey = key;
+            app.state.selectedComboId = null;
+            paintSelection(app.handClasses[key].comboIds);
+          }
+        });
+      });
+
+      byId("comboOverlay").querySelectorAll(".combo-chip").forEach((chip) => {
+        const comboId = Number(chip.getAttribute("data-combo-id"));
+        chip.addEventListener("mousedown", (event) => {
+          if (event.button !== 0) return;
+          app.mouseDown = true;
+          app.state.selectedComboId = comboId;
+          app.state.selectedCellKey = app.catalog.combos[comboId].handKey;
+          paintSelection([comboId]);
+        });
+        chip.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          app.state.selectedComboId = comboId;
+          app.state.selectedCellKey = app.catalog.combos[comboId].handKey;
+          renderAll();
+        });
+        chip.addEventListener("mouseenter", () => {
+          if (app.mouseDown) {
+            app.state.selectedComboId = comboId;
+            app.state.selectedCellKey = app.catalog.combos[comboId].handKey;
+            paintSelection([comboId]);
+          }
+        });
+      });
+
+      const closeBtn = byId("closeOverlayBtn");
+      if (closeBtn) {
+        closeBtn.addEventListener("click", () => {
+          app.state.overlayOpen = false;
+          app.state.selectedComboId = null;
+          renderAll();
+        });
+      }
+
+      byId("sizesList").querySelectorAll("button[data-remove-size]").forEach((button) => {
+        button.addEventListener("click", () => removeSize(Number(button.getAttribute("data-remove-size"))));
+      });
+    }
+
+    function wireStaticEvents() {
+      document.addEventListener("mouseup", () => {
+        app.mouseDown = false;
+      });
+      byId("nodeId").addEventListener("change", applyMetaFromControls);
+      byId("facingBet").addEventListener("change", applyMetaFromControls);
+      byId("exportName").addEventListener("input", () => {
+        byId("exportName").dataset.auto = "0";
+      });
+      byId("paintMode").addEventListener("change", () => {
+        app.state.editMode = byId("paintMode").value;
+        renderAll();
+      });
+      byId("brushPercent").addEventListener("input", () => {
+        app.state.brushPercent = clamp(safeNumber(byId("brushPercent").value, 100), 0, 100);
+      });
+      byId("addSizeBtn").addEventListener("click", addSize);
+      byId("encodeBtn").addEventListener("click", encodeFromState);
+      byId("downloadBtn").addEventListener("click", downloadCurrentBuffer);
+      byId("downloadZstdBtn").addEventListener("click", downloadCurrentBufferZstd);
+      byId("fileInput").addEventListener("change", (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (file) parseUploadedFile(file);
+      });
+      byId("compactToCanonical").addEventListener("input", clipDependentTextFieldsToMask);
+      byId("applyTextBtn").addEventListener("click", applyTextAreasToState);
+      document.addEventListener("click", (event) => {
+        const legendBtn = event.target.closest("#legendButtons button[data-action-index]");
+        const zeroBtn = event.target.closest("#setWeightsZeroBtn");
+        const fullBtn = event.target.closest("#setWeightsFullBtn");
+        if (legendBtn) {
+          app.state.brushActionIndex = Number(legendBtn.getAttribute("data-action-index"));
+          renderLegend();
+          return;
+        }
+        if (zeroBtn) {
+          app.state.weights.fill(0);
+          renderAll();
+          return;
+        }
+        if (fullBtn) {
+          app.state.weights.fill(1);
+          renderAll();
+          return;
+        }
+      });
+    }
+
+    function init() {
+      const built = buildCatalog();
+      if (built.combos.length !== 1326) throw new Error("Failed to build 1326 canonical combos.");
+      app.catalog = built;
+      app.handClasses = built.handClasses;
+      app.gridKeys = built.gridKeys;
+      app.state = createState({
+        nodeId: 101,
+        maxReach: 0,
+        facingBet: false,
+        hasEquity: true,
+        hasNodeEv: true,
+        foldEvOmitted: false,
+        actionSizes: [],
+      });
+      wireStaticEvents();
+      renderAll();
+      byId("hexOut").textContent = "";
+    }
+
+    if (typeof window !== "undefined" && typeof document !== "undefined") {
+      init();
+    }
+  </script>
+</body>
+</html>
